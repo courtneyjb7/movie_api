@@ -1,5 +1,5 @@
 from fastapi import FastAPI
-from src.api import characters, movies, pkg_util
+from src.api import characters, movies, pkg_util, lines
 
 description = """
 Movie API returns dialog statistics on top hollywood movies from decades past.
@@ -25,6 +25,10 @@ tags_metadata = [
         "name": "movies",
         "description": "Access information on top-rated movies.",
     },
+    {
+        "name": "lines",
+        "description": "Access information on lines from movies.",
+    },
 ]
 
 app = FastAPI(
@@ -32,14 +36,15 @@ app = FastAPI(
     description=description,
     version="0.0.1",
     contact={
-        "name": "Lucas Pierce",
-        "email": "lupierce@calpoly.edu",
+        "name": "Courtney Barber",
+        "email": "cbarbe03@calpoly.edu",
     },
     openapi_tags=tags_metadata,
 )
 app.include_router(characters.router)
 app.include_router(movies.router)
 app.include_router(pkg_util.router)
+app.include_router(lines.router)
 
 
 @app.get("/")
