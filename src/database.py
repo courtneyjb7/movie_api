@@ -25,30 +25,30 @@ sess = supabase.auth.get_session()
 # START PLACEHOLDER CODE
 
 # Reading in the log file from the supabase bucket
-log_csv = (
-    supabase.storage.from_("movie-api")
-    .download("movie_conversations_log.csv")
-    .decode("utf-8")
-)
+# log_csv = (
+#     supabase.storage.from_("movie-api")
+#     .download("movie_conversations_log.csv")
+#     .decode("utf-8")
+# )
 
-logs = []
-for row in csv.DictReader(io.StringIO(log_csv), skipinitialspace=True):
-    logs.append(row)
+# logs = []
+# for row in csv.DictReader(io.StringIO(log_csv), skipinitialspace=True):
+#     logs.append(row)
 
 
-# Writing to the log file and uploading to the supabase bucket
-def upload_new_log():
-    output = io.StringIO()
-    csv_writer = csv.DictWriter(
-        output, fieldnames=["post_call_time", "movie_id_added_to"]
-    )
-    csv_writer.writeheader()
-    csv_writer.writerows(logs)
-    supabase.storage.from_("movie-api").upload(
-        "movie_conversations_log.csv",
-        bytes(output.getvalue(), "utf-8"),
-        {"x-upsert": "true"},
-    )
+# # Writing to the log file and uploading to the supabase bucket
+# def upload_new_log():
+#     output = io.StringIO()
+#     csv_writer = csv.DictWriter(
+#         output, fieldnames=["post_call_time", "movie_id_added_to"]
+#     )
+#     csv_writer.writeheader()
+#     csv_writer.writerows(logs)
+#     supabase.storage.from_("movie-api").upload(
+#         "movie_conversations_log.csv",
+#         bytes(output.getvalue(), "utf-8"),
+#         {"x-upsert": "true"},
+#     )
 
 
 # END PLACEHOLDER CODE

@@ -131,9 +131,9 @@ def list_movies(
     
     items = list(filter(filter_fn, db.lines.values()))
     if sort == lines_sort_options.movie_title:
-        items.sort(key=lambda l: l.movie_id)
+        items.sort(key=lambda l: db.movies[l.movie_id].title)
     elif sort == lines_sort_options.character_name:
-        items.sort(key=lambda l: l.c_id)
+        items.sort(key=lambda l: db.characters[l.c_id].name)
 
     json = (
         {
