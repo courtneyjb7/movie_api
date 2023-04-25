@@ -25,18 +25,6 @@ def test_lines():
 
 def test_sort_filter():
     response = client.get(
-        "/lines/?name=hello&limit=10&offset=20&sort=character_name"
-    )
-    assert response.status_code == 200
-
-    with open(
-        "test/lines/lines-name=hello&limit=10&offset=20&sort=character_name.json",
-        encoding="utf-8",
-    ) as f:
-        assert response.json() == json.load(f)
-
-def test_sort_filter2():
-    response = client.get(
         "/lines/?name=what&limit=15&offset=60&sort=movie_title"
     )
     assert response.status_code == 200

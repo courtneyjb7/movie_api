@@ -1,8 +1,9 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from src import database as db
 from pydantic import BaseModel
 from typing import List
 from datetime import datetime
+from src.datatypes import Conversation, Line
 
 
 # FastAPI is inferring what the request body should look like
@@ -36,11 +37,64 @@ def add_conversation(movie_id: int, conversation: ConversationJson):
     request body.
 
     The endpoint returns the id of the resulting conversation that was created.
-    """
+    """ 
+    
+    movie = db.movies.get(movie_id)
+    if movie:
+        ch1 = db.characters.get(conversation.character_1_id)
+        ch2 = db.characters.get(conversation.character_2_id)
+        # check that the characters exist in the given movie and are not the same
+        if ch1 and ch2 and ch1!=ch2 and ch1.movie_id == movie_id and ch2.movie_id == movie_id:
+            for line in conversation.lines: # check that lines match the characters
+                if not (line.character_id == ch1.id or line.character_id == ch2.id):
+                    raise HTTPException(status_code=404, detail="characters do not match.")
 
-    # TODO: Remove the following two lines. This is just a placeholder to show
-    # how you could implement persistent storage.
+            # update conversations
+            if len(db.conv_log) == 0:
+                new_conv_id = 0
+            else:
+                new_conv_id = int(db.conv_log[-1]["conversation_id"]) + 1
+            db.conv_log.append({
+                "conversation_id": new_conv_id,
+                "character1_id": ch1.id, 
+                "character2_id": ch2.id, 
+                "movie_id": movie_id
+            })
+            db.conversations[new_conv_id] = Conversation(
+                new_conv_id, 
+                ch1.id,
+                ch2.id,
+                movie_id,
+                len(conversation.lines)
+            )
+            db.upload_conversations()
 
-    print(conversation)
-    db.logs.append({"post_call_time": datetime.now(), "movie_id_added_to": movie_id})
-    db.upload_new_log()
+            # update lines
+            if len(db.lines_log) == 0:
+                new_line_id = 0
+            else:
+                new_line_id = int(db.lines_log[-1]["line_id"]) + 1
+            for idx, line in enumerate(conversation.lines):
+                db.lines_log.append({
+                    "line_id": new_line_id,
+                    "character_id": line.character_id,
+                    "movie_id": movie_id,
+                    "conversation_id": new_conv_id,
+                    "line_sort": idx + 1,
+                    "line_text": line.line_text
+                })
+                db.lines[new_line_id] = Line(
+                    new_line_id,
+                    line.character_id,
+                    movie_id,
+                    new_conv_id,
+                    idx + 1,
+                    line.line_text
+                )
+                new_line_id += 1
+                # update character's num of lines
+                db.characters[line.character_id].num_lines += 1
+            db.upload_lines()
+            return new_conv_id
+        
+    raise HTTPException(status_code=404, detail="invalid input.")
