@@ -66,18 +66,20 @@ def get_line(line_id: int):
 
         conv = db.conversations[line.conv_id]
         character = db.characters[line.c_id].name
+        other_ch_id = conv.c1_id
+                      if db.characters[conv.c1_id].name != character
+                      else conv.c2_id,
         result = {
             "line_id": line_id,
             "character_name": character,
             "movie_title": db.movies[line.movie_id].title,
             "text": line.line_text,
             "conv_id": line.conv_id,
-            "other_character_name": db.characters[conv.c1_id].name or None
-                                   if db.characters[conv.c1_id].name != character
-                                   else db.characters[conv.c2_id].name or None,
+            "other_character_name": db.characters[other_ch_id].name or None,
             "num_conv_btw_chars": len(list(filter(
                                     lambda conv: conv.movie_id == line.movie_id
-                                    and (conv.c1_id == line.c_id or conv.c2_id == line.c_id),
+                                    and ((conv.c1_id == line.c_id and conv.c2_id == other_ch_id)
+                                         or (conv.c2_id == line.c_id and conv.c1_id == other_ch_id)),
                                     db.conversations.values(),
                                 ))),
             "conversation": [
