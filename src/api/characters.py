@@ -4,26 +4,9 @@ from collections import Counter
 
 from fastapi.params import Query
 from src import database as db
+import sqlalchemy
 
 router = APIRouter()
-
-
-def get_top_conv_characters(character):
-    c_id = character.id
-    movie_id = character.movie_id
-    all_convs = filter(
-        lambda conv: conv.movie_id == movie_id
-        and (conv.c1_id == c_id or conv.c2_id == c_id),
-        db.conversations.values(),
-    )
-    line_counts = Counter()
-
-    for conv in all_convs:
-        other_id = conv.c2_id if conv.c1_id == c_id else conv.c1_id
-        line_counts[other_id] += conv.num_lines
-
-    return line_counts.most_common()
-
 
 @router.get("/characters/{id}", tags=["characters"])
 def get_character(id: int):
@@ -47,27 +30,45 @@ def get_character(id: int):
       originally queried character.
     """
 
-    character = db.characters.get(id)
+    char_stmt = sqlalchemy.text("""
+                SELECT character_id, name, title, gender 
+                FROM characters
+                JOIN movies ON movies.movie_id = characters.movie_id
+                WHERE characters.character_id = (:id)
+              """)
+    conv_stmt = sqlalchemy.text("""
+                  SELECT character1_id, character2_id, COUNT(lines) AS num_lines, name, gender,  characters.character_id
+                  FROM conversations
+                  JOIN lines ON conversations.conversation_id = lines.conversation_id
+                  JOIN characters ON characters.character_id = character1_id OR characters.character_id = character2_id 
+                  WHERE (character1_id = :id AND characters.character_id = character2_id) OR
+                        (character2_id = :id AND characters.character_id = character1_id)
 
-    if character:
-        movie = db.movies.get(character.movie_id)
-        result = {
-            "character_id": character.id,
-            "character": character.name,
-            "movie": movie and movie.title,
-            "gender": character.gender,
-            "top_conversations": (
+                  GROUP BY conversations.character1_id, conversations.character2_id, characters.name, characters.gender, characters.character_id
+                  ORDER BY num_lines DESC, characters.character_id ASC
+                """)
+    with db.engine.connect() as conn:
+        char_result = conn.execute(char_stmt, [{"id": id}])
+        conv_result = conn.execute(conv_stmt, [{"id": id}])
+        json = {}
+        for row in char_result:
+            json["character_id"] = row.character_id
+            json["character"] = row.name
+            json["movie"] = row.title
+            json["gender"] = row.gender
+            json["top_conversations"] = []
+        for row in conv_result:
+            json["top_conversations"].append(
                 {
-                    "character_id": other_id,
-                    "character": db.characters[other_id].name,
-                    "gender": db.characters[other_id].gender,
-                    "number_of_lines_together": lines,
+                    "character_id": row.character_id,
+                    "character": row.name,
+                    "gender": row.gender,
+                    "number_of_lines_together": row.num_lines
                 }
-                for other_id, lines in get_top_conv_characters(character)
-            ),
-        }
-        return result
-
+            ) 
+    if json != {}:      
+        return json
+    
     raise HTTPException(status_code=404, detail="character not found.")
 
 
@@ -106,35 +107,70 @@ def list_characters(
     number of results to skip before returning results.
     """
 
-    if name:
-
-        def filter_fn(c):
-            return c.name and name.upper() in c.name
-
+    # if sort is character_sort_options.character:
+    #     order_by = """characters.name"""
+    # elif sort is character_sort_options.movie:
+    #     order_by = """title"""
+    # elif sort is character_sort_options.number_of_lines:
+    #     order_by = """number_of_lines DESC"""
+    # else:
+    #     assert False
+    if sort is character_sort_options.character:
+        stmt = sqlalchemy.text("""                            
+            SELECT title, characters.character_id, name, COUNT(lines) AS number_of_lines
+            FROM characters                             
+            JOIN movies ON movies.movie_id = characters.movie_id
+            JOIN lines ON characters.character_id = lines.character_id
+            WHERE name ILIKE :char_name
+            GROUP BY movies.title, characters.character_id 
+            ORDER BY characters.name ASC, characters.character_id ASC             
+            OFFSET :offset         
+            LIMIT :limit                     
+        """)
+    elif sort is character_sort_options.movie:
+        stmt = sqlalchemy.text("""                            
+            SELECT title, characters.character_id, name, COUNT(lines) AS number_of_lines
+            FROM characters                             
+            JOIN movies ON movies.movie_id = characters.movie_id
+            JOIN lines ON characters.character_id = lines.character_id
+            WHERE name ILIKE :char_name
+            GROUP BY movies.title, characters.character_id 
+            ORDER BY title ASC, characters.character_id ASC             
+            OFFSET :offset         
+            LIMIT :limit                     
+        """)
+    elif sort is character_sort_options.number_of_lines:
+        stmt = sqlalchemy.text("""                            
+            SELECT title, characters.character_id, name, COUNT(lines) AS number_of_lines
+            FROM characters                             
+            JOIN movies ON movies.movie_id = characters.movie_id
+            JOIN lines ON characters.character_id = lines.character_id
+            WHERE name ILIKE :char_name
+            GROUP BY movies.title, characters.character_id 
+            ORDER BY number_of_lines DESC, characters.character_id ASC             
+            OFFSET :offset         
+            LIMIT :limit                     
+        """)
     else:
+        assert False
+    
+    #ORDER BY :order_by, characters.character_id ASC  
 
-        def filter_fn(_):
-            return True
+    
+    with db.engine.connect() as conn:
+        result = conn.execute(stmt, [{"char_name": f"%{name}%",
+                                      # "order_by": order_by, 
+                                      "offset": offset,
+                                      "limit": limit}])
+        json = []
+        for row in result:
+            json.append(
+                {
+                    "character_id": row.character_id,
+                    "character": row.name,
+                    "movie": row.title,
+                    "number_of_lines": row.number_of_lines
+                }
+            )
 
-    items = list(filter(filter_fn, db.characters.values()))
-
-    def none_last(x, reverse=False):
-        return (x is None) ^ reverse, x
-
-    if sort == character_sort_options.character:
-        items.sort(key=lambda c: none_last(c.name))
-    elif sort == character_sort_options.movie:
-        items.sort(key=lambda c: none_last(db.movies[c.movie_id].title))
-    elif sort == character_sort_options.number_of_lines:
-        items.sort(key=lambda c: none_last(c.num_lines, True), reverse=True)
-
-    json = (
-        {
-            "character_id": c.id,
-            "character": c.name,
-            "movie": db.movies[c.movie_id].title,
-            "number_of_lines": c.num_lines,
-        }
-        for c in items[offset : offset + limit]
-    )
     return json

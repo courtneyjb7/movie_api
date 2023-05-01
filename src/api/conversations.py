@@ -3,7 +3,7 @@ from src import database as db
 from pydantic import BaseModel
 from typing import List
 from datetime import datetime
-from src.datatypes import Conversation, Line
+import sqlalchemy
 
 
 # FastAPI is inferring what the request body should look like
@@ -21,6 +21,64 @@ class ConversationJson(BaseModel):
 
 router = APIRouter()
 
+def check_input(movie_id, ch_id1, ch_id2):
+    if ch_id1 == ch_id2:
+        raise HTTPException(status_code=404, detail="characters are the same.")
+    with db.engine.connect() as conn:  
+        # check if movie exists
+        mov_result = conn.execute(sqlalchemy.text("""
+            SELECT movies.movie_id
+            FROM movies
+            WHERE movies.movie_id = :id
+        """), [{"id": movie_id}])
+        m = 0
+        for row in mov_result:
+            m +=1
+        if m==0:
+            raise HTTPException(status_code=404, detail="movie not found.")
+        
+        # check if characters exist and match movie
+        char_result = conn.execute(sqlalchemy.text("""
+            SELECT movies.movie_id, character_id
+            FROM movies
+            JOIN characters ON characters.movie_id = movies.movie_id
+            WHERE (character_id = :ch_id1 OR
+                character_id = :ch_id2)
+        """), [{"ch_id1": ch_id1, "ch_id2": ch_id2}])
+        for idx, row in enumerate(char_result):
+            if row.movie_id != movie_id:
+                raise HTTPException(status_code=404, detail="character and movie do not match") 
+        if idx + 1 != 2:
+            raise HTTPException(status_code=404, detail="character not found.")
+
+
+
+def get_newIDs():
+    # get the id of the last line 
+    line_id_stmt = sqlalchemy.text("""
+            SELECT line_id
+            FROM lines
+            ORDER BY line_id DESC
+            LIMIT 1
+        """)
+    # get the id of the last conversation 
+    conv_id_stmt = sqlalchemy.text("""
+            SELECT conversation_id AS conv_id
+            FROM conversations
+            ORDER BY conversation_id DESC
+            LIMIT 1
+        """)
+    with db.engine.connect() as conn:        
+        line_id_result = conn.execute(line_id_stmt)
+        conv_id_result = conn.execute(conv_id_stmt)
+        ids = []
+        # get the highest ids and add 1 for the new ids
+        for row in conv_id_result:
+            ids.append(row.conv_id + 1)
+        for row in line_id_result:
+            ids.append(row.line_id + 1)
+        return ids
+    
 
 @router.post("/movies/{movie_id}/conversations/", tags=["movies"])
 def add_conversation(movie_id: int, conversation: ConversationJson):
@@ -38,71 +96,49 @@ def add_conversation(movie_id: int, conversation: ConversationJson):
 
     The endpoint returns the id of the resulting conversation that was created.
     """ 
+    check_input(movie_id, conversation.character_1_id, conversation.character_2_id)
     
-    movie = db.movies.get(movie_id)
-    if not movie:
-        raise HTTPException(status_code=404, detail="movie not found.")
-    
-    ch1 = db.characters.get(conversation.character_1_id)
-    ch2 = db.characters.get(conversation.character_2_id)
-    # check that the characters exist in the given movie and are not the same
-    if not ch1 or not ch2:
-        raise HTTPException(status_code=404, detail="character not found.")  
-    if ch1==ch2:
-        raise HTTPException(status_code=404, detail="characters are the same.") 
-    if ch1.movie_id != movie_id or ch2.movie_id != movie_id:
-        raise HTTPException(status_code=404, detail="character and movie do not match") 
-    
-    # check that lines match the characters
-    for line in conversation.lines: 
-        if not (line.character_id == ch1.id or line.character_id == ch2.id):
-            raise HTTPException(status_code=404, detail="character does not match line.")
+    conv_id, line_id = get_newIDs()
 
-    # update conversations
-    if len(db.conv_log) == 0:
-        new_conv_id = 0
-    else:
-        new_conv_id = int(db.conv_log[-1]["conversation_id"]) + 1
-    db.conv_log.append({
-        "conversation_id": new_conv_id,
-        "character1_id": ch1.id, 
-        "character2_id": ch2.id, 
-        "movie_id": movie_id
-    })
-    db.conversations[new_conv_id] = Conversation(
-        new_conv_id, 
-        ch1.id,
-        ch2.id,
-        movie_id,
-        len(conversation.lines)
-    )
-    db.upload_conversations()
-
-    # update lines
-    if len(db.lines_log) == 0:
-        new_line_id = 0
-    else:
-        new_line_id = int(db.lines_log[-1]["line_id"]) + 1
-    for idx, line in enumerate(conversation.lines):
-        db.lines_log.append({
-            "line_id": new_line_id,
-            "character_id": line.character_id,
-            "movie_id": movie_id,
-            "conversation_id": new_conv_id,
-            "line_sort": idx + 1,
-            "line_text": line.line_text
-        })
-        db.lines[new_line_id] = Line(
-            new_line_id,
-            line.character_id,
-            movie_id,
-            new_conv_id,
-            idx + 1,
-            line.line_text
+    with db.engine.begin() as conn:
+        # Insert new conversation
+        conn.execute(
+            sqlalchemy.text("""
+                INSERT INTO conversations (conversation_id, character1_id, character2_id, movie_id) 
+                VALUES (:w, :x, :y, :z)
+            """),
+                [{
+                    "w": conv_id, 
+                    "x": conversation.character_1_id, 
+                    "y": conversation.character_2_id, 
+                    "z": movie_id
+                }]
         )
-        new_line_id += 1
-        # update character's num of lines
-        db.characters[line.character_id].num_lines += 1
-    db.upload_lines()
-    return new_conv_id
+
+        # Insert each line in the conversation
+        for idx, line in enumerate(conversation.lines):
+            # check if lines character matches conversations character
+            if (line.character_id != conversation.character_1_id
+                and line.character_id != conversation.character_2_id):
+                raise HTTPException(status_code=404, detail="character does not match line.")
+            
+            conn.execute(
+                sqlalchemy.text("""
+                    INSERT INTO lines (line_id, character_id, movie_id, conversation_id, line_sort, line_text) 
+                    VALUES (:l_id, :ch_id, :m_id, :conv_id, :sort, :text)
+                """),
+                    [{
+                        "l_id": line_id, 
+                        "ch_id": line.character_id, 
+                        "m_id": movie_id, 
+                        "conv_id": conv_id,
+                        "sort": idx + 1,
+                        "text": line.line_text
+                    }]
+            )
+            line_id += 1
+        return conv_id
+
+    
+
         

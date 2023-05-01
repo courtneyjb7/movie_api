@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException
 from enum import Enum
 from src import database as db
+import sqlalchemy
 
 router = APIRouter()
 
@@ -19,28 +20,41 @@ def get_char_conversations(conv_id: int):
     * `line`: the text of the line.
 
     """
-    conv = db.conversations.get(conv_id)
-    conv_lines = filter(
-            lambda l: l.conv_id == conv_id,
-            db.lines.values(),
-        )
-    if conv:
-        result = {
-            "movie_title": db.movies[conv.movie_id].title,
-            "ch1": db.characters[conv.c1_id].name,
-            "ch2": db.characters[conv.c2_id].name,
-            "lines": (
-                {
-                    "character": db.characters[line.c_id].name,
-                    "line": line.line_text
+    stmt = sqlalchemy.text("""
+                    SELECT title, name, line_text, 
+                            (conversations.character1_id = characters.character_id) AS is_ch1
+                    FROM conversations
+                    JOIN movies ON movies.movie_id = conversations.movie_id
+                    JOIN lines ON lines.conversation_id = conversations.conversation_id
+                    JOIN characters ON lines.character_id = characters.character_id
+                    WHERE conversations.conversation_id = :id
+                    ORDER BY lines.line_sort
+                """)
+    with db.engine.connect() as conn:
+        result = conn.execute(stmt, [{"id": conv_id}])
+        json = {}
+        for idx, row in enumerate(result):
+            if idx == 0:
+                json = {
+                    "movie_title": row.title,  
+                    "ch1": None,
+                    "ch2": None,
+                    "lines":[]
                 }
-                for line in conv_lines
-            ),
-        }
+            if json["ch1"] == None and row.is_ch1:
+                json["ch1"] = row.name
+            elif json["ch2"] == None and not row.is_ch1:
+                json["ch2"] = row.name
+            json["lines"].append(
+                {
+                    "character": row.name,
+                    "line": row.line_text
+                }
+            ) 
+    if json != {}:      
+        return json
     
-        return result
-
-    raise HTTPException(status_code=404, detail="movie not found.")
+    raise HTTPException(status_code=404, detail="conversation not found.")
 
 
 @router.get("/lines/{line_id}", tags=["lines"])
@@ -57,37 +71,45 @@ def get_line(line_id: int):
     * `conversation`: list of the rest of the lines in the conversation
 
     """
-    line = db.lines.get(line_id)
-    if line:
-        conv_lines = filter(
-            lambda l: l.conv_id == line.conv_id,
-            db.lines.values(),
-        )
+    
+    stmt = sqlalchemy.text("""                            
+            SELECT line_id, name, title, line_text,
+                    lines.conversation_id AS conv_id, 
+                    characters.character_id AS speaker_id
+            FROM lines
+            JOIN characters ON characters.character_id = lines.character_id
+            JOIN movies ON movies.movie_id = lines.movie_id
+            WHERE lines.line_id = :id                           
+        """)
+    
 
-        conv = db.conversations[line.conv_id]
-        character = db.characters[line.c_id].name
-        result = {
-            "line_id": line_id,
-            "character_name": character,
-            "movie_title": db.movies[line.movie_id].title,
-            "text": line.line_text,
-            "conv_id": line.conv_id,
-            "other_character_name": db.characters[conv.c1_id].name or None
-                                   if db.characters[conv.c1_id].name != character
-                                   else db.characters[conv.c2_id].name or None,
-            "num_conv_btw_chars": len(list(filter(
-                                    lambda conv: conv.movie_id == line.movie_id
-                                    and (conv.c1_id == line.c_id or conv.c2_id == line.c_id),
-                                    db.conversations.values(),
-                                ))),
-            "conversation": [
-                conv.line_text
-                for conv in conv_lines
-            ]
-        }
-        return result
-
-    raise HTTPException(status_code=404, detail="line not found.")
+    with db.engine.connect() as conn:
+        result = conn.execute(stmt, [{"id": line_id}])
+        json = {}
+        
+        for idx, row in enumerate(result):
+            if idx==0:                
+                json = {
+                    "line_id": line_id,
+                    "character_name": row.name,
+                    "movie_title": row.title,
+                    "text": row.line_text,
+                    "conv_id": row.conv_id,
+                    # "other_character_name": None,
+                    # "num_conv_btw_chars" : None,
+                    # "conversation": []
+                }
+                conv_id = row.conv_id
+                speaker_id = row.speaker_id
+    if json == {}:
+        raise HTTPException(status_code=404, detail="line not found.")
+    # num_conv_stmt = sqlalchemy.text("""                            
+    #         SELECT COUNT(conversations) AS num_conv
+    #         FROM conversations
+    #         WHERE (conversations.character1_id = :ch_id1 and conversations.character2_id = :ch_id2) OR 
+    #             (conversations.character2_id = :ch_id1 and conversations.character2_id = :ch_id2)                       
+    #     """)
+    return json
 
 
 class lines_sort_options(str, Enum):
@@ -119,31 +141,45 @@ def list_movies(
     * `movie_title` - Sort by movie title alphabetically.
     * `character_name` - Sort by character name alphabetically.
     """
-    if name:
-
-        def filter_fn(l):
-            return l.line_text and name.lower() in l.line_text
-
+    if sort is lines_sort_options.movie_title:
+        stmt = sqlalchemy.text("""                            
+            SELECT line_id, line_sort, line_text, movies.title, characters.name
+            FROM lines                             
+            JOIN characters ON characters.character_id = lines.character_id 
+            JOIN movies ON movies.movie_id = lines.movie_id
+            WHERE line_text ILIKE :text    
+            ORDER BY movies.title, lines.line_id         
+            LIMIT :limit 
+            OFFSET :offset                     
+        """)
+    elif sort is lines_sort_options.character_name:
+        stmt = sqlalchemy.text("""                            
+            SELECT line_id, line_sort, line_text, movies.title, characters.name
+            FROM lines                             
+            JOIN characters ON characters.character_id = lines.character_id 
+            JOIN movies ON movies.movie_id = lines.movie_id
+            WHERE line_text ILIKE :text
+            ORDER BY characters.name, lines.line_id
+            LIMIT :limit
+            OFFSET :offset                     
+        """)
     else:
-
-        def filter_fn(_):
-            return True
+        assert False
     
-    items = list(filter(filter_fn, db.lines.values()))
-    if sort == lines_sort_options.movie_title:
-        items.sort(key=lambda l: db.movies[l.movie_id].title)
-    elif sort == lines_sort_options.character_name:
-        items.sort(key=lambda l: db.characters[l.c_id].name)
-
-    json = (
-        {
-            "line_id": l.id,
-            "character_name": db.characters[l.c_id].name,
-            "movie_title": db.movies[l.movie_id].title,
-            "line_sort": l.line_sort,
-            "line_text": l.line_text,
-        }
-        for l in items[offset : offset + limit]
-    )
+    with db.engine.connect() as conn:
+        result = conn.execute(stmt, [{"text": f"%{name}%",
+                                      "offset": offset,
+                                      "limit": limit}])
+        json = []
+        for row in result:
+            json.append(
+                {
+                    "line_id": row.line_id,
+                    "movie_title": row.title,
+                    "character_name": row.name,
+                    "line_sort": row.line_sort,
+                    "line_text": row.line_text
+                }
+            )
 
     return json
