@@ -71,17 +71,19 @@ def get_line(line_id: int):
     * `conversation`: list of the rest of the lines in the conversation
 
     """
-    
+    # get line information, as well as the characters in the conversation and who is speaking
     stmt = sqlalchemy.text("""                            
             SELECT line_id, name, title, line_text,
                     lines.conversation_id AS conv_id, 
-                    characters.character_id AS speaker_id
+                    characters.character_id AS speaker_id,
+                    conversations.character1_id AS ch_id1,
+                    conversations.character2_id AS ch_id2
             FROM lines
             JOIN characters ON characters.character_id = lines.character_id
             JOIN movies ON movies.movie_id = lines.movie_id
+            JOIN conversations ON lines.conversation_id = conversations.conversation_id
             WHERE lines.line_id = :id                           
-        """)
-    
+        """)    
 
     with db.engine.connect() as conn:
         result = conn.execute(stmt, [{"id": line_id}])
@@ -95,21 +97,41 @@ def get_line(line_id: int):
                     "movie_title": row.title,
                     "text": row.line_text,
                     "conv_id": row.conv_id,
-                    # "other_character_name": None,
-                    # "num_conv_btw_chars" : None,
-                    # "conversation": []
+                    "other_character_name": None,
+                    "num_conv_btw_chars" : None,
+                    "conversation": []
                 }
                 conv_id = row.conv_id
+                ch_id1= row.ch_id1
+                ch_id2= row.ch_id2
                 speaker_id = row.speaker_id
-    if json == {}:
-        raise HTTPException(status_code=404, detail="line not found.")
-    # num_conv_stmt = sqlalchemy.text("""                            
-    #         SELECT COUNT(conversations) AS num_conv
-    #         FROM conversations
-    #         WHERE (conversations.character1_id = :ch_id1 and conversations.character2_id = :ch_id2) OR 
-    #             (conversations.character2_id = :ch_id1 and conversations.character2_id = :ch_id2)                       
-    #     """)
-    return json
+        if json == {}:
+            raise HTTPException(status_code=404, detail="line not found.")
+        
+        # find number of conversations between characters
+        result = conn.execute(sqlalchemy.text("""                            
+                SELECT COUNT(conversations) AS num_conv
+                FROM conversations
+                WHERE (conversations.character1_id = :ch_id1 and conversations.character2_id = :ch_id2) OR 
+                    (conversations.character2_id = :ch_id1 and conversations.character2_id = :ch_id2)                       
+            """), [{"ch_id1": ch_id1, "ch_id2": ch_id2}])
+        for row in result:
+            json["num_conv_btw_chars"] = row.num_conv
+
+        # find all the lines in the conversation and the other character's name
+        result = conn.execute(sqlalchemy.text("""                            
+                SELECT line_text, lines.character_id, name
+                FROM lines
+                JOIN characters ON characters.character_id = lines.character_id
+                WHERE lines.conversation_id =  :conv_id                     
+            """), [{"conv_id": conv_id}])
+        for row in result:
+            if (json["other_character_name"] == None and
+                row.character_id != speaker_id):
+                json["other_character_name"] = row.name
+            json["conversation"].append(row.line_text)
+                
+        return json
 
 
 class lines_sort_options(str, Enum):
@@ -148,7 +170,7 @@ def list_movies(
             JOIN characters ON characters.character_id = lines.character_id 
             JOIN movies ON movies.movie_id = lines.movie_id
             WHERE line_text ILIKE :text    
-            ORDER BY movies.title, lines.line_id         
+            ORDER BY movies.title ASC, lines.line_id ASC     
             LIMIT :limit 
             OFFSET :offset                     
         """)
@@ -159,7 +181,7 @@ def list_movies(
             JOIN characters ON characters.character_id = lines.character_id 
             JOIN movies ON movies.movie_id = lines.movie_id
             WHERE line_text ILIKE :text
-            ORDER BY characters.name, lines.line_id
+            ORDER BY characters.name ASC, lines.line_id ASC
             LIMIT :limit
             OFFSET :offset                     
         """)
