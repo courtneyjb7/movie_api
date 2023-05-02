@@ -3,7 +3,7 @@ from enum import Enum
 from src import database as db
 from fastapi.params import Query
 import sqlalchemy
- 
+
 router = APIRouter()
 
 
