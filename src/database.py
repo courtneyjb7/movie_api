@@ -2,7 +2,6 @@ import csv
 # from src.datatypes import Character, Movie, Conversation, Line
 import os
 import io
-from supabase import Client, create_client
 import dotenv
 from sqlalchemy import create_engine
 import sqlalchemy
